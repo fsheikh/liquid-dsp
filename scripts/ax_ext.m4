@@ -88,7 +88,7 @@ AC_DEFUN([AX_EXT],
   [
     ax_cv_have_sse3_ext=no
     if test "$((0x$ecx&0x01))" = 1; then
-      ax_cv_have_sse3_ext=yes
+      ax_cv_have_sse3_ext=no
     fi
   ])
 
@@ -96,7 +96,7 @@ AC_DEFUN([AX_EXT],
   [
     ax_cv_have_ssse3_ext=no
     if test "$((0x$ecx>>9&0x01))" = 1; then
-      ax_cv_have_ssse3_ext=yes
+      ax_cv_have_ssse3_ext=no
     fi
   ])
 
@@ -104,7 +104,7 @@ AC_DEFUN([AX_EXT],
   [
     ax_cv_have_sse41_ext=no
     if test "$((0x$ecx>>19&0x01))" = 1; then
-      ax_cv_have_sse41_ext=yes
+      ax_cv_have_sse41_ext=no
     fi
   ])
 
@@ -112,7 +112,7 @@ AC_DEFUN([AX_EXT],
   [
     ax_cv_have_sse42_ext=no
     if test "$((0x$ecx>>20&0x01))" = 1; then
-      ax_cv_have_sse42_ext=yes
+      ax_cv_have_sse42_ext=no
     fi
   ])
 
@@ -120,7 +120,7 @@ AC_DEFUN([AX_EXT],
   [
     ax_cv_have_avx_ext=no
     if test "$((0x$ecx>>28&0x01))" = 1; then
-      ax_cv_have_avx_ext=yes
+      ax_cv_have_avx_ext=no
     fi
   ])
 
@@ -163,6 +163,5 @@ AC_DEFUN([AX_EXT],
     AC_DEFINE(HAVE_AVX,,[Support AVX (Advanced Vector Extensions) instructions])
     AX_CHECK_COMPILE_FLAG(-mavx, SIMD_FLAGS="$SIMD_FLAGS -mavx", [])
   fi
-
   AC_SUBST(SIMD_FLAGS)
 ])
