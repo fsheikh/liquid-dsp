@@ -1613,6 +1613,7 @@ sandbox_programs =						\
 	sandbox/modem_demodulate_soft_gentab			\
 	sandbox/mskmodem_test					\
 	sandbox/msresamp_crcf_test				\
+	sandbox/oct3filt				\
 	sandbox/ofdmoqam_firpfbch_test				\
 	sandbox/ofdm_ber_test					\
 	sandbox/ofdmframe_papr_test				\
@@ -1627,6 +1628,7 @@ sandbox_programs =						\
 	sandbox/rkaiser2_test					\
 	sandbox/shadowing_test					\
 	sandbox/simplex_test					\
+	sandbox/sound_level_meter				\
 	sandbox/symsync_crcf_test				\
 	sandbox/symsync_eqlms_test				\
 	sandbox/svd_test					\
