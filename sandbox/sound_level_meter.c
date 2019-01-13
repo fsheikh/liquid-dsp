@@ -94,7 +94,7 @@ int one_third_filter(unsigned int n, float f0, float fs, float* b, float* a) {
     }
 
     // complex digital poles/zeros/gain
-    // NOTE: allocated double the filter order to cover band-pass, band-stop cases
+    // NOTE: allocated double the filter order to cover band-pass
     float f1 = f0 / OCT_HALFBAND_FACTOR;
     float f2 = f0 * OCT_HALFBAND_FACTOR;
     float Qr = f0 / (f2 - f1);
@@ -208,7 +208,7 @@ int main(int argc, char*argv[]) {
         exit(1);
     }
 
-    // Output file to verify with GNU OCTAVE
+    // Output file to verify with GNU OCTAVE afterwards
     FILE* fid = fopen(OUTPUT_FILENAME, "w");
     // RMS power of each band, initialized to NAN
     float rms_power[OCT_EDGE_FREQS];
@@ -221,10 +221,10 @@ int main(int argc, char*argv[]) {
     fprintf(fid, "rms_power=NaN*ones(1,%d);\n", OCT_EDGE_FREQS);
     fprintf(fid, "freq_set=zeros(1,%d);\n", OCT_EDGE_FREQS);
     fprintf(fid, "num_samples=%lu;\n", data_read);
-    fprintf(fid, "XX=[%12.4e %12.4e %12.4e %12.4e %12.4e];\n", sound_data[9], sound_data[99], sound_data[999], sound_data[1999], sound_data[2999]);
     fprintf(fid, "Fs=%12.4e;\n", fs);
 
-    float freq_set[OCT_EDGE_FREQS]; // Set of center frequencies derived from 1/3 octave band edges
+    // Set of center frequencies derived from 1/3 octave band edges
+    float freq_set[OCT_EDGE_FREQS];
     unsigned p_index; // pivot frequency index
     unsigned f_index = construct_freq_set(freq_set, &p_index, fs);
     for (unsigned fii=0; fii < OCT_EDGE_FREQS; fii++) {
@@ -259,14 +259,6 @@ int main(int argc, char*argv[]) {
             fprintf(fid, "b_%d(%d)=%12.4e;\n", b_index+1, findex+1, b[findex]);
             fprintf(fid, "a_%d(%d)=%12.4e;\n", b_index+1, findex+1, a[findex]);
         }
-#if 0
-        float accum_power = 0.0f;
-        float filt_output[OCT_BLK_SIZE] = {0.0f};
-        for (size_t data_index = 0; data_index < data_read; data_index+=OCT_BLK_SIZE) {
-            iirfilt_rrrf_execute_block(octave_one_third, &sound_data[data_index], OCT_BLK_SIZE, filt_output);
-            accum_power += liquid_sumsqf(filt_output, OCT_BLK_SIZE);
-        }
-#endif
         float accum_power = 0.0f;
         float filt_output = 0.0f;
         for (size_t data_index = 0; data_index < data_read; data_index++) {
@@ -277,9 +269,6 @@ int main(int argc, char*argv[]) {
         fprintf(fid, "rms_power(%d)=%12.8f\n", b_index+1, rms_power[b_index]);
         iirfilt_rrrf_destroy(octave_one_third);
     }
-    // Call GNU octave for verification.
-    fprintf(fid, "x=load('%s');\n",input_file);
-    fprintf(fid, "[P,F]=filtbank(x, %12.4e, %12.4e, '%s');\n",fs, data_read/fs, "extended"); 
     // For lower frequencies we apply same filter-band with three frequencies
     // albeit with decimation.
     float bu[2*n + 1];
@@ -307,24 +296,33 @@ int main(int argc, char*argv[]) {
         fclose(fid);
         exit(1);
     }
-    // FIR filter used for decimation
-    firdecim_rrrf decim = firdecim_rrrf_create_kaiser(OCT_DECIMATION_FACTOR, OCT_FIRFILT_DELAY, 30.0f);
-
-    firdecim_rrrf_set_scale(decim, 1.0/2.0f);
+    // IIR filter used for decimation is an 8th order CHEBY-I which the default version
+    // in corresponding GNU octave
+    iirdecim_rrrf decim = iirdecim_rrrf_create_prototype(OCT_DECIMATION_FACTOR,
+                                                         LIQUID_IIRDES_CHEBY1,
+                                                         LIQUID_IIRDES_LOWPASS,
+                                                         LIQUID_IIRDES_SOS,
+                                                         8,
+                                                         0.5f/OCT_DECIMATION_FACTOR,
+                                                         0.0f,
+                                                         0.1f,
+                                                         60.0f);
 
     size_t decimated_size = data_read;
-    float filt_output[OCT_BLK_SIZE] = {0.0f};
     // Lower bands are treated with same set of a three-set filterbank
     for (int b_index = p_index - 1; b_index >= 0; b_index = b_index-3) {
-        // Create decimated output
+        // Create decimated output...
         decimated_size = decimated_size / 2;
         float* decimated_out = (float *) malloc(decimated_size * sizeof(float));
-        firdecim_rrrf_execute_block(decim, sound_data, decimated_size, decimated_out);
+        // Produce filtered output...
+        for (size_t d_i = 0; d_i < decimated_size; d_i++) {
+            iirdecim_rrrf_execute(decim, &sound_data[OCT_DECIMATION_FACTOR * d_i], &decimated_out[d_i]);
+        }
         sound_data = (float *) realloc(sound_data, decimated_size * sizeof(float));
         if (sound_data == NULL) {
             fprintf(stderr, "Cannot resize input after decimation\n");
             free(decimated_out);
-            firdecim_rrrf_destroy(decim);
+            iirdecim_rrrf_destroy(decim);
             fclose(fid);
             exit(1);
         }
@@ -334,67 +332,67 @@ int main(int argc, char*argv[]) {
             if (isnan(sound_data[di])) {
                 fprintf(stderr, "Info: NaN found in sound data after decimation at index %lu\n", di);
                 free(decimated_out);
-                firdecim_rrrf_destroy(decim);
+                iirdecim_rrrf_destroy(decim);
                 free(decimated_out);
                 fclose(fid);
                 exit(1);
             }
         }
+
+        // Purpose for temporary array fullfilled, free resources
         free(decimated_out);
         // Apply octave filters analysis on decimated output
         iirfilt_rrrf octave_one_third_upper = iirfilt_rrrf_create(bu, 2*n + 1, au, 2*n + 1);
         iirfilt_rrrf octave_one_third_center = iirfilt_rrrf_create(bc, 2*n + 1, ac, 2*n + 1);
         iirfilt_rrrf octave_one_third_lower = iirfilt_rrrf_create(bl, 2*n + 1, al, 2*n + 1);
         float accum_power[3]  = {0.0f, 0.0f, 0.0f};
+        float filt_output[3] = {0.0f};
         bool apply_center = b_index >= 1 ? true : false;
         bool apply_lower = b_index >= 2 ? true : false;
-        for (size_t ii=0; ii < decimated_size; ii+=OCT_BLK_SIZE) {
+
+        // Main processing loop for low-frequency bands
+        for (size_t ii=0; ii < decimated_size; ii++) {
             // Start with upper ocatve filter
-            iirfilt_rrrf_execute_block(octave_one_third_upper, &sound_data[ii], OCT_BLK_SIZE, filt_output);
-            if(isnan(liquid_sumsqf(filt_output, OCT_BLK_SIZE))) {
+            iirfilt_rrrf_execute(octave_one_third_upper, sound_data[ii], &filt_output[2]);
+            if(isnan(liquid_sumsqf(&filt_output[2], 1))) {
                 fprintf(stdout, "NAN after applying upper 1/3 octave filter for sound_data from index=%lu\n", ii);
             }
-            accum_power[2] += liquid_sumsqf(filt_output, OCT_BLK_SIZE);
-            iirfilt_rrrf_reset(octave_one_third_upper);
-            for (size_t fi=0; fi < OCT_BLK_SIZE; fi++) {
-                filt_output[fi] = 0.0f;
-            }
+            accum_power[2] += liquid_sumsqf(&filt_output[2], 1);
+            //iirfilt_rrrf_reset(octave_one_third_upper);
+            //filt_output[2] = 0.0f;
             // Continue to center octave filter if possible
             if (apply_center) {
-                iirfilt_rrrf_execute_block(octave_one_third_center, &sound_data[ii], OCT_BLK_SIZE, filt_output);
-                accum_power[1] += liquid_sumsqf(filt_output, OCT_BLK_SIZE);
+                iirfilt_rrrf_execute(octave_one_third_center, sound_data[ii], &filt_output[1]);
+                accum_power[1] += liquid_sumsqf(&filt_output[1], 1);
                 if(isnan(accum_power[1])) {
                     fprintf(stdout, "NAN after applying center 1/3 octave filter for sound_data from index=%lu\n", ii);
                 }
-                iirfilt_rrrf_reset(octave_one_third_center);
-                for (size_t fi=0; fi < OCT_BLK_SIZE; fi++) {
-                    filt_output[fi] = 0.0f;
-                }
+                //iirfilt_rrrf_reset(octave_one_third_center);
             }
             // Finally attempt lowest octave filter if possible
             if (apply_lower) {
-                iirfilt_rrrf_execute_block(octave_one_third_lower, &sound_data[ii], OCT_BLK_SIZE, filt_output);
-                accum_power[0] += liquid_sumsqf(filt_output, OCT_BLK_SIZE);
+                iirfilt_rrrf_execute(octave_one_third_lower, sound_data[ii], &filt_output[0]);
+                accum_power[0] += liquid_sumsqf(&filt_output[0], 1);
                 if(isnan(accum_power[0])) {
                     fprintf(stdout, "NAN after applying lower 1/3 octave filter for sound_data from index=%lu\n", ii);
                 }
-                iirfilt_rrrf_reset(octave_one_third_lower);
-                for (size_t fi=0; fi < OCT_BLK_SIZE; fi++) {
-                    filt_output[fi] = 0.0f;
-                }
             }
-            //printf("Dying in which outer loop %d b_index and inner index %zu\n", b_index, ii);
-        }
-        rms_power[b_index] = 10*log10f(accum_power[2]/(float) decimated_size);
+        } // filtering on low frequency bands
+
+        // Compute RMS power for low frequency bands for which filtering was completed above
+        rms_power[b_index] = 10*log10f(accum_power[2]);
+        fprintf(fid, "rms_power(%d)=%12.8f\n", b_index+1, rms_power[b_index]);
         accum_power[2] = 0.0f;
         fprintf(stdout, "Info: Power computed rms_power[%d]=%12.8f from %lu samples\n", b_index, rms_power[b_index], decimated_size);
         if (apply_center) {
-            rms_power[b_index - 1] = 10*log10f(accum_power[1]/(float) decimated_size);
+            rms_power[b_index - 1] = 10*log10f(accum_power[1]);
+            fprintf(fid, "rms_power(%d)=%12.8f\n", b_index, rms_power[b_index-1]);
             accum_power[1] = 0.0f;
             fprintf(stdout, "Info: Power computed rms_power[%d]=%12.8f from %lu samples\n", b_index - 1, rms_power[b_index - 1], decimated_size);
         }
         if (apply_lower) {
-            rms_power[b_index - 2] =10*log10f(accum_power[0]/(float) decimated_size);
+            rms_power[b_index - 2] =10*log10f(accum_power[0]);
+            fprintf(fid, "rms_power(%d)=%12.8f\n", b_index-1, rms_power[b_index-2]);
             accum_power[0] = 0.0f;
             fprintf(stdout, "Info: Power computed rms_power[%d]=%12.8f from %lu samples\n", b_index - 2, rms_power[b_index-2], decimated_size);
         }
@@ -403,12 +401,15 @@ int main(int argc, char*argv[]) {
         iirfilt_rrrf_destroy(octave_one_third_center);
         iirfilt_rrrf_destroy(octave_one_third_lower);
     }
+    // Call GNU octave for verification.
+    fprintf(fid, "x=load('%s');\n",input_file);
+    fprintf(fid, "[P,F]=filtbank(x, %12.4e, %12.4e, '%s');\n",fs, data_read/fs, "extended");
     // Add the followin the output GNU octave file
     //>> axis([0 31 0 40])
     //>> set(gca, 'XTickLabel', F)
     //>> bar(rms_power)
     // Cleanup owned resources by the program
-    firdecim_rrrf_destroy(decim);
+    iirdecim_rrrf_destroy(decim);
     fprintf(stdout, "Debug: Liquid resources cleared\n");
     free(sound_data);
     fclose(fid);
