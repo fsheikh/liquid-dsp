@@ -1,8 +1,32 @@
 // sound_level_meter.c
 //
-// Software implementation of a sound level meter
-// Based on original work in Matlab/Octave by 
+// Software implementation of a sound level meter (SLM) as specified by ANSI S1.4
 //
+// This is essentially a port of a MATLAB/GNU Octave Toolbox originally developed
+// by Christophe Couvreur (couvreur@thor.fpms.ac.be). The toolbox is available
+// for downloading from Mathworks website.
+//
+// The port to liquidSDR is mostly intended for embedded developers looking for
+// a quick prototype. Shared in the hope that it would be useful but with absoultely
+// no guarantees/liability or warranty.
+//
+// Usage:
+//
+// This program accepts a data file with sound/audio samples. It has been tested
+// with sample sine waves at one-third octave center frequencies with wav files
+// taken from https://www.churchsoundcheck.com/audio-test-signals.html.
+//
+//
+// From GNU Octave one can generate such data as:
+//
+// sigX=wavread('filename.wav');
+// save -ascii filename.dat sigX
+//
+// Output:
+//
+// The output of the program is a GNU octave file which can be run to generate
+// a plot of RMS powers in each octave band. Optionally it is also possible to
+// run it against the original tool in case user has it installed.
 
 #include <assert.h>
 #include <stdlib.h>
@@ -34,6 +58,7 @@
 // 30 seconds of Audio at the default sampling rate is the maximum size supported.
 #define MAX_INPUT_DATA_SIZE     DEFAULT_SAMPLING_RATE * 30
 #define OCT_BLK_SIZE            64
+
 // print usage/help message
 void usage()
 {
@@ -43,8 +68,11 @@ void usage()
     printf("  n     : filter order, n > 0 [3]\n");
     printf("  r     : sampling rate, must be higher than 11025Hz, [44.1KHz]\n");
     printf("  d     : filename containing 32 bit FP sound data sampled at r [sound.dat] \n");
+    printf("  o     : Generate calls to original 1/3 octave filterbank program from comparison");
 }
 
+// Function to read audio samples from a file, please see usage
+// section at the top of this file for input file's format information.
 // data_f: pointer to array of 32bit FP samples of sound signal
 // filename: File from which to read floating point sound data
 // returns number of samples that were read
@@ -74,6 +102,7 @@ size_t get_sound_data(float* data_f, char* filename)
 
     return samples_read;
 }
+// Designs an Octave 1/3 bandpass filter, uses liquid's butterworth IIR prototype
 // n: Filter order
 // f0: Center frequency
 // fs: Sampling rate for which filter is designed.
@@ -93,15 +122,15 @@ int one_third_filter(unsigned int n, float f0, float fs, float* b, float* a) {
         return OCT_ERROR_CODE;
     }
 
-    // complex digital poles/zeros/gain
-    // NOTE: allocated double the filter order to cover band-pass
+    // Computations to figure out cut-off frequency for 13
     float f1 = f0 / OCT_HALFBAND_FACTOR;
     float f2 = f0 * OCT_HALFBAND_FACTOR;
     float Qr = f0 / (f2 - f1);
     float Qd = Qr * (OCT_HALF_PI / n) / sinf(OCT_HALF_PI / n);
     float alpha = ((1 + sqrtf(1 + (4 * powf(Qd, 2.0f)))) / 2.0f) / Qd;
     assert(alpha > 1.0f);
-    printf("alpha=%12.4e fc=%12.4e f0=%12.4e f2=%12.4e\r\n", alpha, f0*alpha, f0, f2);
+    fprintf(stdout, "Info! One-third Octave design params: alpha=%12.4e fc=%12.4e f0=%12.4e f2=%12.4e\n",
+            alpha, f0*alpha, f0, f2);
     liquid_iirdes(LIQUID_IIRDES_BUTTER,
                   LIQUID_IIRDES_BANDPASS,
                   LIQUID_IIRDES_TF,
@@ -111,6 +140,14 @@ int one_third_filter(unsigned int n, float f0, float fs, float* b, float* a) {
     return 0;
 }
 
+// This utility function constructs a frequency set of center frequencies
+// for 1/3 octave filterbank.
+// Returns pivot frequency under which octave analysis is applied after continuous decimation
+// Also returns complete frequency set and index to highest frequency to which analysis has been
+// restricted (based on sampling rate)
+float band_edges[OCT_EDGE_FREQS] = {25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630,
+                                    800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000,
+                                    12500, 16000, 20000};
 unsigned construct_freq_set(float* freq_set, unsigned* pivot, float sampling_rate)
 {
     if (freq_set == NULL) {
@@ -119,10 +156,6 @@ unsigned construct_freq_set(float* freq_set, unsigned* pivot, float sampling_rat
     }
     // Construct frequency set, while keeping highest upper edge freq band
     // sufficiently lower than sampling rate.
-    float band_edges[OCT_EDGE_FREQS] = {25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630,
-                        800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000,
-                        12500, 16000, 20000};
-    // Conversion from band-edges to band-pass center frequency
     unsigned f_index = 0;
     for (int e_index = (-OCT_EDGE_FREQS/2) - 1; e_index < (OCT_EDGE_FREQS/2) - 1; e_index++) {
         freq_set[f_index] = 1000.0f * powf(1.25999f, e_index);
@@ -136,7 +169,7 @@ unsigned construct_freq_set(float* freq_set, unsigned* pivot, float sampling_rat
             f_index++ ;
         }
         if (f_index < OCT_EDGE_FREQS - 1) {
-            fprintf(stderr,"Warning!, Octave analysis will be restricted till band_edge[%d]=%12.4e\n",
+            fprintf(stderr,"Warning! Octave analysis will be restricted till band_edge[%d]=%12.4e\n",
                     f_index, band_edges[f_index]);
         }
     }
@@ -147,16 +180,22 @@ unsigned construct_freq_set(float* freq_set, unsigned* pivot, float sampling_rat
     while ((p_index < f_index) && (freq_set[p_index] < sampling_rate/20.0f)) {
         p_index++;
     }
-    printf("final index %d, pivot index %d\n", f_index, p_index);
+    fprintf(stderr, "Info! last frequency analyzed[%d]=%12.4e, Pivot Frequency[%d]=%12.4e\n",
+            f_index, band_edges[f_index], p_index, band_edges[p_index]);
     *pivot = p_index;
     return f_index;
 }
+
+// Main programming loop, this is a much bigger main function
+// than it dersves to be.
 int main(int argc, char*argv[]) {
 
     // Default IIR filter order
     unsigned int n = 3;
     // Default sampling rate
     float fs = DEFAULT_SAMPLING_RATE;
+    // Generate calls to original 1/3 octave filter bank
+    bool gen_calls_toolbox = false;
     // Default input data filename
     char input_file[INPUT_FILENAME_LIMIT];
     strncpy(input_file, INPUT_FILENAME, strlen(INPUT_FILENAME)+1);
@@ -192,6 +231,9 @@ int main(int argc, char*argv[]) {
             strncpy(input_file, optarg, strlen(optarg)+1);
             fprintf(stdout, "Input file supplied %s\n", input_file);
             break;
+        case 'o':
+            gen_calls_toolbox = true;
+            break;
         default:
             fprintf(stderr, "No valid option supplied\n");
             usage();
@@ -208,7 +250,7 @@ int main(int argc, char*argv[]) {
         exit(1);
     }
 
-    // Output file to verify with GNU OCTAVE afterwards
+    // Generate an output GNU octave script that can be used for verification
     FILE* fid = fopen(OUTPUT_FILENAME, "w");
     // RMS power of each band, initialized to NAN
     float rms_power[OCT_EDGE_FREQS];
@@ -220,6 +262,7 @@ int main(int argc, char*argv[]) {
     fprintf(fid, "clear all;\n");
     fprintf(fid, "rms_power=NaN*ones(1,%d);\n", OCT_EDGE_FREQS);
     fprintf(fid, "freq_set=zeros(1,%d);\n", OCT_EDGE_FREQS);
+    fprintf(fid, "F=zeros(1,%d);\n", OCT_EDGE_FREQS);
     fprintf(fid, "num_samples=%lu;\n", data_read);
     fprintf(fid, "Fs=%12.4e;\n", fs);
 
@@ -235,6 +278,7 @@ int main(int argc, char*argv[]) {
             fprintf(fid, "final_freq=%12.8e;\n", freq_set[fii] * fs);
         }
         fprintf(fid, "freq_set(%d)=%12.8e;\n", fii+1, freq_set[fii] * fs);
+        fprintf(fid, "F(%d)=%12.8e;\n", fii+1, band_edges[fii]);
     }
 
     // We have the data and the centre frequencies, now we can start 1/3 octave
@@ -245,9 +289,10 @@ int main(int argc, char*argv[]) {
     {
         float b[L];
         float a[L];
+#ifdef OCT_DEBUG
         fprintf(fid, "b_%d=zeros(1, %d);\n", b_index+1, L);
         fprintf(fid, "a_%d=zeros(1, %d);\n", b_index+1, L);
-
+#endif
         if (one_third_filter(n, freq_set[b_index], fs, b, a) == OCT_ERROR_CODE) {
             fprintf(stderr, "Failed to design octave 1/3 filter for freq_set[%d]=%12.8e\n",
                     b_index, freq_set[b_index]);
@@ -255,10 +300,12 @@ int main(int argc, char*argv[]) {
             exit(1);
         }
         iirfilt_rrrf octave_one_third = iirfilt_rrrf_create(b, L, a, L);
+#ifdef OCT_DEBUG
         for (unsigned findex = 0; findex < L; findex++) {
             fprintf(fid, "b_%d(%d)=%12.4e;\n", b_index+1, findex+1, b[findex]);
             fprintf(fid, "a_%d(%d)=%12.4e;\n", b_index+1, findex+1, a[findex]);
         }
+#endif
         float accum_power = 0.0f;
         float filt_output = 0.0f;
         for (size_t data_index = 0; data_index < data_read; data_index++) {
@@ -266,11 +313,11 @@ int main(int argc, char*argv[]) {
             accum_power += liquid_sumsqf(&filt_output, 1);
         }
         rms_power[b_index] = 10*log10f(accum_power/(float) data_read);
-        fprintf(fid, "rms_power(%d)=%12.8f\n", b_index+1, rms_power[b_index]);
+        fprintf(fid, "rms_power(%d)=%12.8f;\n", b_index+1, rms_power[b_index]);
         iirfilt_rrrf_destroy(octave_one_third);
     }
     // For lower frequencies we apply same filter-band with three frequencies
-    // albeit with decimation.
+    // albeit after decimation by 2.
     float bu[2*n + 1];
     float au[2*n + 1];
     float bc[2*n + 1];
@@ -289,7 +336,8 @@ int main(int argc, char*argv[]) {
         free(sound_data);
         exit(1);
     }
-    fprintf(stdout, "upper freq=%12.4e, center_freq=%12.4e, lower_freq=%12.4e\n", half_fc, half_fc/OCT_CUBEROOT_TWO, half_fc/OCT_CUBEROOT_TWO_SQ);
+    fprintf(stdout, "Info! Decimation filterbank upper_freq=%12.4e, center_freq=%12.4e, lower_freq=%12.4e\n",
+            half_fc, half_fc/OCT_CUBEROOT_TWO, half_fc/OCT_CUBEROOT_TWO_SQ);
     if (one_third_filter(n, half_fc/OCT_CUBEROOT_TWO_SQ, fs, bl, al) == OCT_ERROR_CODE) {
         fprintf(stderr, "Failed to design lower octave 1/3 filter for freq=%12.8e\n", half_fc/OCT_CUBEROOT_TWO_SQ);
         free(sound_data);
@@ -327,7 +375,7 @@ int main(int argc, char*argv[]) {
             exit(1);
         }
         memcpy(sound_data, decimated_out, decimated_size * sizeof(float));
-        printf("Resized input data to %lu samples\n", decimated_size);
+        fprintf(stdout, "Info! Resized input data to %lu samples before applying filterbank\n", decimated_size);
         for (size_t di=0; di < decimated_size; di++) {
             if (isnan(sound_data[di])) {
                 fprintf(stderr, "Info: NaN found in sound data after decimation at index %lu\n", di);
@@ -355,26 +403,23 @@ int main(int argc, char*argv[]) {
             // Start with upper ocatve filter
             iirfilt_rrrf_execute(octave_one_third_upper, sound_data[ii], &filt_output[2]);
             if(isnan(liquid_sumsqf(&filt_output[2], 1))) {
-                fprintf(stdout, "NAN after applying upper 1/3 octave filter for sound_data from index=%lu\n", ii);
+                fprintf(stdout, "NAN detected after applying upper 1/3 octave filter for sound_data from index=%lu\n", ii);
             }
             accum_power[2] += liquid_sumsqf(&filt_output[2], 1);
-            //iirfilt_rrrf_reset(octave_one_third_upper);
-            //filt_output[2] = 0.0f;
             // Continue to center octave filter if possible
             if (apply_center) {
                 iirfilt_rrrf_execute(octave_one_third_center, sound_data[ii], &filt_output[1]);
                 accum_power[1] += liquid_sumsqf(&filt_output[1], 1);
                 if(isnan(accum_power[1])) {
-                    fprintf(stdout, "NAN after applying center 1/3 octave filter for sound_data from index=%lu\n", ii);
+                    fprintf(stdout, "NAN detected after applying center 1/3 octave filter for sound_data from index=%lu\n", ii);
                 }
-                //iirfilt_rrrf_reset(octave_one_third_center);
             }
             // Finally attempt lowest octave filter if possible
             if (apply_lower) {
                 iirfilt_rrrf_execute(octave_one_third_lower, sound_data[ii], &filt_output[0]);
                 accum_power[0] += liquid_sumsqf(&filt_output[0], 1);
                 if(isnan(accum_power[0])) {
-                    fprintf(stdout, "NAN after applying lower 1/3 octave filter for sound_data from index=%lu\n", ii);
+                    fprintf(stdout, "NAN detected after applying lower 1/3 octave filter for sound_data from index=%lu\n", ii);
                 }
             }
         } // filtering on low frequency bands
@@ -383,35 +428,46 @@ int main(int argc, char*argv[]) {
         rms_power[b_index] = 10*log10f(accum_power[2]);
         fprintf(fid, "rms_power(%d)=%12.8f\n", b_index+1, rms_power[b_index]);
         accum_power[2] = 0.0f;
+#ifdef OCT_DEBUG
         fprintf(stdout, "Info: Power computed rms_power[%d]=%12.8f from %lu samples\n", b_index, rms_power[b_index], decimated_size);
+#endif
         if (apply_center) {
             rms_power[b_index - 1] = 10*log10f(accum_power[1]);
             fprintf(fid, "rms_power(%d)=%12.8f\n", b_index, rms_power[b_index-1]);
             accum_power[1] = 0.0f;
+#ifdef OCT_DEBUG
             fprintf(stdout, "Info: Power computed rms_power[%d]=%12.8f from %lu samples\n", b_index - 1, rms_power[b_index - 1], decimated_size);
+#endif
         }
         if (apply_lower) {
-            rms_power[b_index - 2] =10*log10f(accum_power[0]);
+            rms_power[b_index - 2] = 10*log10f(accum_power[0]);
             fprintf(fid, "rms_power(%d)=%12.8f\n", b_index-1, rms_power[b_index-2]);
             accum_power[0] = 0.0f;
+#ifdef OCT_DEBUG
             fprintf(stdout, "Info: Power computed rms_power[%d]=%12.8f from %lu samples\n", b_index - 2, rms_power[b_index-2], decimated_size);
+#endif
         }
+#ifdef OCT_DEBUG
         fprintf(stdout, "Info: Center frequency processed: freq_set[%d]=%12.4e\n", b_index, freq_set[b_index]);
+#endif
         iirfilt_rrrf_destroy(octave_one_third_upper);
         iirfilt_rrrf_destroy(octave_one_third_center);
         iirfilt_rrrf_destroy(octave_one_third_lower);
     }
     // Call GNU octave for verification.
-    fprintf(fid, "x=load('%s');\n",input_file);
-    fprintf(fid, "[P,F]=filtbank(x, %12.4e, %12.4e, '%s');\n",fs, data_read/fs, "extended");
+    if (gen_calls_toolbox) {
+        fprintf(fid, "x=load('%s');\n",input_file);
+        fprintf(fid, "[P,F]=filtbank(x, %12.4e, %12.4e, '%s');\n",fs, data_read/fs, "extended");
+    }
     // Add the followin the output GNU octave file
-    //>> axis([0 31 0 40])
-    //>> set(gca, 'XTickLabel', F)
-    //>> bar(rms_power)
+    fprintf(fid, "bar(rms_power)\n");
+    fprintf(fid, "axis([0 %d 0 40])\n", OCT_EDGE_FREQS);
+    fprintf(fid, "set(gca, 'XTickLabel', F)\n");
     // Cleanup owned resources by the program
     iirdecim_rrrf_destroy(decim);
     fprintf(stdout, "Debug: Liquid resources cleared\n");
     free(sound_data);
     fclose(fid);
+    fprintf(stderr, "Info! Octave 1/3 filtebank analysis Done! Please run %s to see results\n", OUTPUT_FILENAME);
     return 0;
 }
