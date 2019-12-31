@@ -33,7 +33,7 @@
 
 #define FIRFARROW_USE_DOTPROD 1
 
-#define FIRFARROW_DEBUG 0
+#define FIRFARROW_DEBUG 1
 
 // defined:
 //  FIRFARROW()     name-mangling macro
@@ -211,6 +211,8 @@ void FIRFARROW(_set_delay)(FIRFARROW() _q,
 
         //printf("  h[%3u] = %12.8f\n", i, _q->h[i]);
     }
+
+    _q->mu = _mu;
 }
 
 // execute firfarrow internal dot product
@@ -329,13 +331,30 @@ void FIRFARROW(_genpoly)(FIRFARROW() _q)
 
             h0 = sincf(2.0f*(_q->fc)*(x + mu));
             h1 = liquid_kaiser(i,_q->h_len,beta);
-#if FIRFARROW_DEBUG
-            printf("  %3u : x=%12.8f, mu=%12.8f, h0=%12.8f, h1=%12.8f, hp=%12.8f\n",
-                    j, x, mu, h0, h1, h0*h1);
-#endif
 
             mu_vect[j] = mu;
             hp_vect[j] = h0*h1;
+#if 1
+            if (j == 0) {
+                printf("Taking half point path\n");
+                if (i != (_q->h_len)/2) {
+                    hp_vect[j] = 0.0f;
+                } else {
+                    hp_vect[j] = 1.0f;
+                }
+            } else if ( j == _q->Q) {
+                printf("Taking minus half point path\n");
+                if (i != (_q->h_len -1)/2) {
+                    hp_vect[j] = 0.0f;
+                } else {
+                    hp_vect[j] = 1.0f;
+                }
+            }
+#endif
+#if FIRFARROW_DEBUG
+            printf("  %3u : x=%12.8f, mu=%12.8f, h0=%12.8f, h1=%12.8f, hp=%12.8f\n",
+                    j, x, mu, h0, h1, hp_vect[j]);
+#endif
         }
         POLY(_fit)(mu_vect,hp_vect,_q->Q+1,p,_q->Q+1);
 #if FIRFARROW_DEBUG
